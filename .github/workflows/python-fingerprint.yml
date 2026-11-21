@@ -1,0 +1,49 @@
+name: macOS direct Python fingerprint (unprivileged, candidate only)
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: macos-python-fingerprint-manual
+  cancel-in-progress: false
+jobs:
+  identify:
+    runs-on: macos-15-intel
+    timeout-minutes: 5
+    steps:
+      - name: Read Apple-signed framework Python metadata without executing Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'CLASSIFICATION=CANDIDATE_FINGERPRINT_ONLY_NOT_INDEPENDENTLY_APPROVED'
+          printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+          /usr/bin/sw_vers
+          /usr/bin/uname -m
+          /usr/bin/xcode-select -p
+          /usr/sbin/pkgutil --pkg-info com.apple.pkg.CLTools_Executables || true
+          selected="$(/usr/bin/xcrun --find python3)" || { echo 'HELD_XCRUN_DISCOVERY'; exit 1; }
+          echo "DISCOVERED_PATH=$selected"
+          case "$selected" in
+            /Library/Developer/CommandLineTools/usr/bin/python3|/Applications/Xcode*.app/Contents/Developer/usr/bin/python3) ;;
+            *) echo 'HELD_UNEXPECTED_DISCOVERY_PATH'; exit 1 ;;
+          esac
+          direct="$(/usr/bin/perl -MCwd=realpath -e 'my $p=realpath(shift); defined($p) or exit 1; print $p' "$selected")" || { echo 'HELD_REALPATH'; exit 1; }
+          echo "DIRECT_FRAMEWORK_BINARY=$direct"
+          case "$direct" in
+            /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/*/bin/python3*|/Applications/Xcode*.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/*/bin/python3*) ;;
+            *) echo 'HELD_UNEXPECTED_DIRECT_PATH'; exit 1 ;;
+          esac
+          [[ -f "$direct" && ! -L "$direct" ]] || { echo 'HELD_NOT_DIRECT_FILE'; exit 1; }
+          /usr/bin/codesign --verify --strict -R '=anchor apple and identifier = "com.apple.python3"' "$direct" || { echo 'HELD_APPLE_SIGNATURE'; exit 1; }
+          echo 'APPLE_SIGNATURE_REQUIREMENT=PASS'
+          /usr/bin/codesign -dv --verbose=2 "$direct" 2>&1 | /usr/bin/grep -E 'Identifier=|Authority=|TeamIdentifier=' || true
+          /usr/bin/stat -f 'BINARY_METADATA=%Su:%Sg %Sp %N' "$direct"
+          /bin/ls -lde "$selected" "$direct"
+          node="$direct"
+          while [[ "$node" != / ]]; do
+            node="$(/usr/bin/dirname "$node")"
+            /bin/ls -lde "$node"
+          done
+          echo "DIRECT_BINARY_SHA256=$(/usr/bin/shasum -a 256 "$direct" | /usr/bin/awk '{print $1}')"
+          echo 'NO_CANDIDATE_PYTHON_EXECUTION=YES'
+          echo 'NO_SUDO=YES'
+          echo 'TRUST_STATUS=PROPOSED_FINGERPRINT_NOT_APPROVED_PIN'
