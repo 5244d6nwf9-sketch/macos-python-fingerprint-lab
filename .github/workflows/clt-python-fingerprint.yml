@@ -1,0 +1,54 @@
+name: macOS CLT direct Python candidate (read-only)
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: clt-python-fingerprint-manual
+  cancel-in-progress: false
+jobs:
+  identify:
+    runs-on: macos-15-intel
+    timeout-minutes: 5
+    steps:
+      - name: Read CLT direct framework Python provenance without executing candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'CLASSIFICATION=CANDIDATE_FINGERPRINT_ONLY_NOT_INDEPENDENTLY_APPROVED'
+          printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+          /usr/bin/sw_vers
+          /usr/bin/uname -m
+          /usr/sbin/pkgutil --pkg-info com.apple.pkg.CLTools_Executables || true
+          clt=/Library/Developer/CommandLineTools
+          /bin/ls -lde "$clt" "$clt/usr/bin" || true
+          selected="$(/usr/bin/env -i PATH=/usr/bin:/bin DEVELOPER_DIR="$clt" /usr/bin/xcrun --find python3)" || { echo 'HELD_CLT_XCRUN_DISCOVERY'; exit 0; }
+          echo "CLT_DISCOVERED_PATH=$selected"
+          case "$selected" in
+            /Library/Developer/CommandLineTools/usr/bin/python3) ;;
+            *) echo 'HELD_UNEXPECTED_CLT_DISCOVERY_PATH'; exit 0 ;;
+          esac
+          direct="$(/usr/bin/perl -MCwd=realpath -e 'my $p=realpath(shift); defined($p) or exit 1; print $p' "$selected")" || { echo 'HELD_CLT_REALPATH'; exit 0; }
+          echo "CLT_DIRECT_FRAMEWORK_BINARY=$direct"
+          case "$direct" in
+            /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/*/bin/python3*) ;;
+            *) echo 'HELD_UNEXPECTED_CLT_DIRECT_PATH'; exit 0 ;;
+          esac
+          [[ -f "$direct" && ! -L "$direct" ]] || { echo 'HELD_CLT_NOT_DIRECT_FILE'; exit 0; }
+          if /usr/bin/codesign --verify --strict -R '=anchor apple and identifier = "com.apple.python3"' "$direct"; then
+            echo 'APPLE_SIGNATURE_REQUIREMENT=PASS'
+          else
+            echo 'APPLE_SIGNATURE_REQUIREMENT=FAIL'
+          fi
+          /usr/bin/codesign -dv --verbose=2 "$direct" 2>&1 | /usr/bin/grep -E 'Identifier=|Authority=|TeamIdentifier=' || true
+          echo "CLT_DIRECT_BINARY_SHA256=$(/usr/bin/shasum -a 256 "$direct" | /usr/bin/awk '{print $1}')"
+          node="$direct"
+          while :; do
+            /usr/bin/stat -f 'PATH_METADATA=%u:%g %Lp %N' "$node" || echo 'HELD_PATH_STAT'
+            /bin/ls -lde "$node" || echo 'HELD_PATH_ACL'
+            [[ "$node" == / ]] && break
+            node="$(/usr/bin/dirname "$node")"
+          done
+          /bin/ls -lde "$selected" || true
+          echo 'NO_CANDIDATE_PYTHON_EXECUTION=YES'
+          echo 'NO_SUDO=YES'
+          echo 'TRUST_STATUS=PROPOSED_FINGERPRINT_NOT_APPROVED_PIN'
