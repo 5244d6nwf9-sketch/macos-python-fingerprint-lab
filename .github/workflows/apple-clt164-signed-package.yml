@@ -50,7 +50,7 @@ jobs:
           /usr/bin/curl -fLSs --retry 2 --connect-timeout 20 --max-time 900 "$pkg_url" -o "$work/CLTools_Executables.pkg"
           echo "DOWNLOADED_PACKAGE_BYTES=$(/usr/bin/stat -f %z "$work/CLTools_Executables.pkg")"
           /usr/sbin/pkgutil --check-signature "$work/CLTools_Executables.pkg" | /usr/bin/tee "$work/signature.txt"
-          /usr/bin/grep -Eiq 'Status: signed by a certificate trusted by Mac OS X|Status: signed by Software Signing|Status: signed by' "$work/signature.txt" || { echo 'HELD_UNSIGNED_PACKAGE'; exit 1; }
+          /usr/bin/grep -Eq '^[[:space:]]*Status: signed Apple Software[[:space:]]*$' "$work/signature.txt" || { echo 'HELD_UNEXPECTED_SIGNATURE_STATUS'; exit 1; }
           /usr/bin/grep -Eq 'Apple Software Update (Certificate|Certification) Authority' "$work/signature.txt" || { echo 'HELD_UNEXPECTED_PACKAGE_CA'; exit 1; }
           /usr/bin/grep -Fq 'Apple Root CA' "$work/signature.txt" || { echo 'HELD_UNEXPECTED_ROOT_CA'; exit 1; }
           echo 'APPLE_DISTRIBUTION_SIGNATURE=PASS'
