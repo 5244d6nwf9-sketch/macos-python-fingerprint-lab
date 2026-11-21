@@ -1,0 +1,67 @@
+name: Apple signed CLT 16.4 package provenance (no installation)
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: apple-clt164-provenance-once
+  cancel-in-progress: false
+jobs:
+  extract:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - name: Read official Apple signed CLT package and compare extracted Python
+        shell: bash
+        env:
+          CATALOG_URL: "https://swscan.apple.com/content/catalogs/others/index-15-14-13-12-10.16-10.15-10.14-10.13-10.12-10.11-10.10-10.9-mountainlion-lion-snowleopard-leopard.merged-1.sucatalog"
+        run: |
+          set -euo pipefail
+          echo 'SCOPE=APPLE_SIGNED_PACKAGE_INDEPENDENT_OF_INSTALLED_BINARY'
+          echo 'PRODUCT=082-41241'
+          echo 'TARGET_CLT_VERSION=16.4.0.0.1.1747106510'
+          echo 'NO_SUDO=YES'
+          echo 'NO_INSTALLER_EXECUTION=YES'
+          work="$(/usr/bin/mktemp -d "${RUNNER_TEMP:-/tmp}/d13-clt164.XXXXXXXX")"
+          trap '/bin/rm -rf "$work"' EXIT
+          /usr/bin/curl -fLSs --retry 2 --connect-timeout 20 --max-time 150 "$CATALOG_URL" -o "$work/catalog.plist"
+          /usr/bin/plutil -lint "$work/catalog.plist"
+          /usr/bin/plutil -convert json -o "$work/catalog.json" "$work/catalog.plist"
+          pkg_url="$(/usr/bin/ruby -rjson -e '
+            p=JSON.parse(File.read(ARGV[0])).fetch("Products").fetch("082-41241")
+            a=p.fetch("Packages").map{|v| v.fetch("URL")}.select{|u| u.end_with?("/CLTools_Executables.pkg")}
+            abort("HELD_UNIQUE_PACKAGE_URL") unless a.length == 1
+            u=a.first
+            abort("HELD_NON_APPLE_PACKAGE_URL") unless u.match?(%r{\Ahttps://(?:swcdn\.apple\.com|updates\.cdn-apple\.com)/})
+            puts u
+          ' "$work/catalog.json")" || { echo 'HELD_CATALOG_PRODUCT_NOT_VERIFIED'; exit 1; }
+          echo 'APPLE_CATALOG_PRODUCT=082-41241'
+          echo 'APPLE_CATALOG_PACKAGE=CLTools_Executables.pkg'
+          avail="$(/bin/df -Pk "$work" | /usr/bin/awk 'NR==2{print $4}')"
+          [[ "$avail" =~ ^[0-9]+$ && "$avail" -ge 5242880 ]] || { echo 'HELD_INSUFFICIENT_SCRATCH_DISK'; exit 1; }
+          /usr/bin/curl -fLSs --retry 2 --connect-timeout 20 --max-time 900 "$pkg_url" -o "$work/CLTools_Executables.pkg"
+          echo "DOWNLOADED_PACKAGE_BYTES=$(/usr/bin/stat -f %z "$work/CLTools_Executables.pkg")"
+          /usr/sbin/pkgutil --check-signature "$work/CLTools_Executables.pkg" | /usr/bin/tee "$work/signature.txt"
+          /usr/bin/grep -Eiq 'Status: signed by a certificate trusted by Mac OS X|Status: signed by Software Signing|Status: signed by' "$work/signature.txt" || { echo 'HELD_UNSIGNED_PACKAGE'; exit 1; }
+          /usr/bin/grep -Eq 'Apple Software Update (Certificate|Certification) Authority' "$work/signature.txt" || { echo 'HELD_UNEXPECTED_PACKAGE_CA'; exit 1; }
+          /usr/bin/grep -Fq 'Apple Root CA' "$work/signature.txt" || { echo 'HELD_UNEXPECTED_ROOT_CA'; exit 1; }
+          echo 'APPLE_DISTRIBUTION_SIGNATURE=PASS'
+          /usr/sbin/pkgutil --expand-full "$work/CLTools_Executables.pkg" "$work/expanded"
+          echo 'APPLE_PKG_EXTRACTED_NO_INSTALL=YES'
+          /usr/bin/find "$work/expanded" -name PackageInfo -type f -print > "$work/packageinfos"
+          while IFS= read -r info; do
+            if /usr/bin/grep -Fq 'identifier="com.apple.pkg.CLTools_Executables"' "$info"; then
+              /usr/bin/printf '%s\n' "$info"
+            fi
+          done < "$work/packageinfos" > "$work/matchinginfos"
+          [[ "$(/usr/bin/wc -l < "$work/matchinginfos" | /usr/bin/tr -d ' ')" == 1 ]] || { echo 'HELD_PACKAGE_ID_NOT_UNIQUE'; exit 1; }
+          /usr/bin/grep -Eq 'version="16\.4\.0\.0\.1\.1747106510"' "$(/usr/bin/head -n 1 "$work/matchinginfos")" || { echo 'HELD_PACKAGE_VERSION'; exit 1; }
+          echo 'SIGNED_PKG_ID_VERSION=PASS'
+          /usr/bin/find "$work/expanded" -type f -path '*/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9' -print > "$work/matchingbinaries"
+          [[ "$(/usr/bin/wc -l < "$work/matchingbinaries" | /usr/bin/tr -d ' ')" == 1 ]] || { echo 'HELD_PYTHON_FILE_MISSING_OR_DUPLICATE'; exit 1; }
+          direct="$(/usr/bin/head -n 1 "$work/matchingbinaries")"
+          /usr/bin/stat -f 'SIGNED_PACKAGE_PYTHON_BYTES=%z' "$direct"
+          digest="$(/usr/bin/shasum -a 256 "$direct" | /usr/bin/awk '{print $1}')"
+          echo "SIGNED_PACKAGE_PYTHON_SHA256=$digest"
+          [[ "$digest" == '5c5950c62eee5fd227a67e4bdfcde81c9add59799bba0949635f3d5ba9661c26' ]] || { echo 'HELD_SIGNED_PKG_MISMATCH_WITH_INSTALLED'; exit 1; }
+          echo 'SIGNED_PACKAGE_BYTES_MATCH_RUNNER=YES'
+          echo 'TRUST_SCOPE=APPLE_SIGNED_SOURCE_INDEPENDENT_OF_INSTALLED_RUNNER_PYTHON'
