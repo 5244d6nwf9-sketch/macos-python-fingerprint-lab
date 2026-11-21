@@ -25,15 +25,24 @@ jobs:
           trap '/bin/rm -rf "$work"' EXIT
           /usr/bin/curl -fLSs --retry 2 --connect-timeout 20 --max-time 150 "$CATALOG_URL" -o "$work/catalog.plist"
           /usr/bin/plutil -lint "$work/catalog.plist"
-          /usr/bin/plutil -convert json -o "$work/catalog.json" "$work/catalog.plist"
-          pkg_url="$(/usr/bin/ruby -rjson -e '
-            p=JSON.parse(File.read(ARGV[0])).fetch("Products").fetch("082-41241")
-            a=p.fetch("Packages").map{|v| v.fetch("URL")}.select{|u| u.end_with?("/CLTools_Executables.pkg")}
-            abort("HELD_UNIQUE_PACKAGE_URL") unless a.length == 1
-            u=a.first
-            abort("HELD_NON_APPLE_PACKAGE_URL") unless u.match?(%r{\Ahttps://(?:swcdn\.apple\.com|updates\.cdn-apple\.com)/})
-            puts u
-          ' "$work/catalog.json")" || { echo 'HELD_CATALOG_PRODUCT_NOT_VERIFIED'; exit 1; }
+          # plutil cannot convert catalog-wide date/data fields into JSON.
+          # Read only the target product's string URL values via native plist API.
+          pkg_url=''
+          pkg_matches=0
+          package_list_ended=0
+          for index in $(/usr/bin/seq 0 63); do
+            if ! url="$(/usr/bin/plutil -extract "Products.082-41241.Packages.$index.URL" raw -o - "$work/catalog.plist" 2>/dev/null)"; then
+              package_list_ended=1
+              break
+            fi
+            case "$url" in
+              https://swcdn.apple.com/*/CLTools_Executables.pkg|https://updates.cdn-apple.com/*/CLTools_Executables.pkg)
+                pkg_url="$url"
+                pkg_matches=$((pkg_matches + 1))
+                ;;
+            esac
+          done
+          [[ "$package_list_ended" -eq 1 && "$pkg_matches" -eq 1 ]] || { echo 'HELD_UNIQUE_APPLE_CDN_PACKAGE_URL'; exit 1; }
           echo 'APPLE_CATALOG_PRODUCT=082-41241'
           echo 'APPLE_CATALOG_PACKAGE=CLTools_Executables.pkg'
           avail="$(/bin/df -Pk "$work" | /usr/bin/awk 'NR==2{print $4}')"
